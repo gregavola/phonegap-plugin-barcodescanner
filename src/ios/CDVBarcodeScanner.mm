@@ -109,6 +109,8 @@
 @property (nonatomic, retain) NSString*        alternateXib;
 @property (nonatomic)         BOOL             shutterPressed;
 @property (nonatomic, retain) IBOutlet UIView* overlayView;
+@property (nonatomic, retain) UIToolbar * toolbar;
+@property (nonatomic, retain) UIView * reticleView;
 // unsafe_unretained is equivalent to assign - used to prevent retain cycles in the property below
 @property (nonatomic, unsafe_unretained) id orientationDelegate;
 
@@ -118,6 +120,8 @@
 - (UIImage*)buildReticleImage;
 - (void)shutterButtonPressed;
 - (IBAction)cancelButtonPressed:(id)sender;
+- (IBAction)flipCameraButtonPressed:(id)sender;
+- (IBAction)torchButtonPressed:(id)sender;
 
 @end
 
@@ -407,20 +411,22 @@ parentViewController:(UIViewController*)parentViewController
 //--------------------------------------------------------------------------
 - (void)barcodeScanSucceeded:(NSString*)text format:(NSString*)format {
     dispatch_sync(dispatch_get_main_queue(), ^{
+        if (self.isSuccessBeepEnabled) {
+            AudioServicesPlaySystemSound(_soundFileObject);
+        }
         [self barcodeScanDone:^{
             [self.plugin returnSuccess:text format:format cancelled:FALSE flipped:FALSE callback:self.callback];
         }];
-        if (self.isSuccessBeepEnabled) {
-          AudioServicesPlaySystemSound(_soundFileObject);
-        }
     });
 }
 
 //--------------------------------------------------------------------------
 - (void)barcodeScanFailed:(NSString*)message {
-    [self barcodeScanDone:^{
-        [self.plugin returnError:message callback:self.callback];
-    }];
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        [self barcodeScanDone:^{
+            [self.plugin returnError:message callback:self.callback];
+        }];
+    });
 }
 
 //--------------------------------------------------------------------------
@@ -520,18 +526,8 @@ parentViewController:(UIViewController*)parentViewController
     else {
         return @"unable to add video capture output to session";
     }
-
-    [output setMetadataObjectTypes:@[AVMetadataObjectTypeQRCode,
-                                     AVMetadataObjectTypeAztecCode,
-                                     AVMetadataObjectTypeDataMatrixCode,
-                                     AVMetadataObjectTypeUPCECode,
-                                     AVMetadataObjectTypeEAN8Code,
-                                     AVMetadataObjectTypeEAN13Code,
-                                     AVMetadataObjectTypeCode128Code,
-                                     AVMetadataObjectTypeCode93Code,
-                                     AVMetadataObjectTypeCode39Code,
-                                     AVMetadataObjectTypeITF14Code,
-                                     AVMetadataObjectTypePDF417Code]];
+    
+    [output setMetadataObjectTypes:[self formatObjectTypes]];
 
     // setup capture preview layer
     self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:captureSession];
@@ -626,6 +622,32 @@ parentViewController:(UIViewController*)parentViewController
     if (format.type == AVMetadataObjectTypeITF14Code)          return @"ITF";
     if (format.type == AVMetadataObjectTypePDF417Code)      return @"PDF_417";
     return @"???";
+}
+
+//--------------------------------------------------------------------------
+// convert string formats to metadata objects
+//--------------------------------------------------------------------------
+- (NSArray*) formatObjectTypes {
+    NSArray *supportedFormats = nil;
+    if (self.formats != nil) {
+        supportedFormats = [self.formats componentsSeparatedByString:@","];
+    }
+    
+    NSMutableArray * formatObjectTypes = [NSMutableArray array];
+    
+    if (self.formats == nil || [supportedFormats containsObject:@"QR_CODE"]) [formatObjectTypes addObject:AVMetadataObjectTypeQRCode];
+    if (self.formats == nil || [supportedFormats containsObject:@"AZTEC"]) [formatObjectTypes addObject:AVMetadataObjectTypeAztecCode];
+    if (self.formats == nil || [supportedFormats containsObject:@"DATA_MATRIX"]) [formatObjectTypes addObject:AVMetadataObjectTypeDataMatrixCode];
+    if (self.formats == nil || [supportedFormats containsObject:@"UPC_E"]) [formatObjectTypes addObject:AVMetadataObjectTypeUPCECode];
+    if (self.formats == nil || [supportedFormats containsObject:@"EAN_8"]) [formatObjectTypes addObject:AVMetadataObjectTypeEAN8Code];
+    if (self.formats == nil || [supportedFormats containsObject:@"EAN_13"]) [formatObjectTypes addObject:AVMetadataObjectTypeEAN13Code];
+    if (self.formats == nil || [supportedFormats containsObject:@"CODE_128"]) [formatObjectTypes addObject:AVMetadataObjectTypeCode128Code];
+    if (self.formats == nil || [supportedFormats containsObject:@"CODE_93"]) [formatObjectTypes addObject:AVMetadataObjectTypeCode93Code];
+    if (self.formats == nil || [supportedFormats containsObject:@"CODE_39"]) [formatObjectTypes addObject:AVMetadataObjectTypeCode39Code];
+    if (self.formats == nil || [supportedFormats containsObject:@"ITF"]) [formatObjectTypes addObject:AVMetadataObjectTypeITF14Code];
+    if (self.formats == nil || [supportedFormats containsObject:@"PDF_417"]) [formatObjectTypes addObject:AVMetadataObjectTypePDF417Code];
+    
+    return formatObjectTypes;
 }
 
 //--------------------------------------------------------------------------
@@ -881,19 +903,6 @@ parentViewController:(UIViewController*)parentViewController
 //--------------------------------------------------------------------------
 - (void)loadView {
     self.view = [[UIView alloc] initWithFrame: self.processor.parentViewController.view.frame];
-
-    // setup capture preview layer
-    AVCaptureVideoPreviewLayer* previewLayer = self.processor.previewLayer;
-    previewLayer.frame = self.view.bounds;
-    previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-
-    if ([previewLayer.connection isVideoOrientationSupported]) {
-        [previewLayer.connection setVideoOrientation:AVCaptureVideoOrientationPortrait];
-    }
-
-    [self.view.layer insertSublayer:previewLayer below:[[self.view.layer sublayers] objectAtIndex:0]];
-
-    [self.view addSubview:[self buildOverlayView]];
 }
 
 //--------------------------------------------------------------------------
@@ -909,6 +918,18 @@ parentViewController:(UIViewController*)parentViewController
 
 //--------------------------------------------------------------------------
 - (void)viewDidAppear:(BOOL)animated {
+    // setup capture preview layer
+    AVCaptureVideoPreviewLayer* previewLayer = self.processor.previewLayer;
+    previewLayer.frame = self.view.bounds;
+    previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+
+    if ([previewLayer.connection isVideoOrientationSupported]) {
+        [previewLayer.connection setVideoOrientation:AVCaptureVideoOrientationPortrait];
+    }
+
+    [self.view.layer insertSublayer:previewLayer below:[[self.view.layer sublayers] objectAtIndex:0]];
+
+    [self.view addSubview:[self buildOverlayView]];
     [self startCapturing];
 
     [super viewDidAppear:animated];
@@ -920,7 +941,7 @@ parentViewController:(UIViewController*)parentViewController
 }
 
 //--------------------------------------------------------------------------
-- (void)shutterButtonPressed {
+- (IBAction)shutterButtonPressed {
     self.shutterPressed = YES;
 }
 
@@ -929,12 +950,12 @@ parentViewController:(UIViewController*)parentViewController
     [self.processor performSelector:@selector(barcodeScanCancelled) withObject:nil afterDelay:0];
 }
 
-- (void)flipCameraButtonPressed:(id)sender
+- (IBAction)flipCameraButtonPressed:(id)sender
 {
     [self.processor performSelector:@selector(flipCamera) withObject:nil afterDelay:0];
 }
 
-- (void)torchButtonPressed:(id)sender
+- (IBAction)torchButtonPressed:(id)sender
 {
   [self.processor performSelector:@selector(toggleTorch) withObject:nil afterDelay:0];
 }
@@ -949,7 +970,16 @@ parentViewController:(UIViewController*)parentViewController
         NSLog(@"%@", @"An error occurred loading the overlay xib.  It appears that the overlayView outlet is not set.");
         return nil;
     }
-
+	
+	self.overlayView.autoresizesSubviews = YES;
+    self.overlayView.autoresizingMask    = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.overlayView.opaque              = NO;
+	
+	CGRect bounds = self.view.bounds;
+    bounds = CGRectMake(0, 0, bounds.size.width, bounds.size.height);
+	
+	[self.overlayView setFrame:bounds];
+	
     return self.overlayView;
 }
 
@@ -960,7 +990,7 @@ parentViewController:(UIViewController*)parentViewController
     {
         return [self buildOverlayViewFromXib];
     }
-    CGRect bounds = self.view.bounds;
+    CGRect bounds = self.view.frame;
     bounds = CGRectMake(0, 0, bounds.size.width, bounds.size.height);
 
     UIView* overlayView = [[UIView alloc] initWithFrame:bounds];
@@ -968,8 +998,8 @@ parentViewController:(UIViewController*)parentViewController
     overlayView.autoresizingMask    = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     overlayView.opaque              = NO;
 
-    UIToolbar* toolbar = [[UIToolbar alloc] init];
-    toolbar.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
+    self.toolbar = [[UIToolbar alloc] init];
+    self.toolbar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
     id cancelButton = [[[UIBarButtonItem alloc]
                        initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
@@ -1030,44 +1060,23 @@ parentViewController:(UIViewController*)parentViewController
       [items insertObject:torchButton atIndex:0];
     }
   }
-
-    toolbar.items = items;
-
-    bounds = overlayView.bounds;
-
-    [toolbar sizeToFit];
-    CGFloat toolbarHeight  = [toolbar frame].size.height;
-    CGFloat rootViewHeight = CGRectGetHeight(bounds);
-    CGFloat rootViewWidth  = CGRectGetWidth(bounds);
-    CGRect  rectArea       = CGRectMake(0, rootViewHeight - toolbarHeight, rootViewWidth, toolbarHeight);
-    [toolbar setFrame:rectArea];
-
-    [overlayView addSubview: toolbar];
+    self.toolbar.items = items;
+    [overlayView addSubview: self.toolbar];
 
     UIImage* reticleImage = [self buildReticleImage];
-    UIView* reticleView = [[[UIImageView alloc] initWithImage:reticleImage] autorelease];
-    CGFloat minAxis = MIN(rootViewHeight, rootViewWidth);
+    self.reticleView = [[[UIImageView alloc] initWithImage:reticleImage] autorelease];
 
-    rectArea = CGRectMake(
-        (CGFloat) (0.5 * (rootViewWidth  - minAxis)),
-        (CGFloat) (0.5 * (rootViewHeight - minAxis)),
-        minAxis,
-        minAxis
-    );
-
-    [reticleView setFrame:rectArea];
-
-    reticleView.opaque           = NO;
-    reticleView.contentMode      = UIViewContentModeScaleAspectFit;
-    reticleView.autoresizingMask = (UIViewAutoresizing) (0
+    self.reticleView.opaque           = NO;
+    self.reticleView.contentMode      = UIViewContentModeScaleAspectFit;
+    self.reticleView.autoresizingMask = (UIViewAutoresizing) (0
         | UIViewAutoresizingFlexibleLeftMargin
         | UIViewAutoresizingFlexibleRightMargin
         | UIViewAutoresizingFlexibleTopMargin
         | UIViewAutoresizingFlexibleBottomMargin)
     ;
 
-    [overlayView addSubview: reticleView];
-
+    [overlayView addSubview: self.reticleView];
+    [self resizeElements];
     return overlayView;
 }
 
@@ -1159,7 +1168,35 @@ parentViewController:(UIViewController*)parentViewController
     }
 
     previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+
+    [self resizeElements];
     [UIView setAnimationsEnabled:YES];
+}
+
+-(void) resizeElements {
+    CGRect bounds = self.view.bounds;
+    if (@available(iOS 11.0, *)) {
+        bounds = CGRectMake(bounds.origin.x, bounds.origin.y, bounds.size.width, self.view.safeAreaLayoutGuide.layoutFrame.size.height+self.view.safeAreaLayoutGuide.layoutFrame.origin.y);
+    }
+
+    [self.toolbar sizeToFit];
+    CGFloat toolbarHeight  = [self.toolbar frame].size.height;
+    CGFloat rootViewHeight = CGRectGetHeight(bounds);
+    CGFloat rootViewWidth  = CGRectGetWidth(bounds);
+    CGRect  rectArea       = CGRectMake(0, rootViewHeight - toolbarHeight, rootViewWidth, toolbarHeight);
+    [self.toolbar setFrame:rectArea];
+
+    CGFloat minAxis = MIN(rootViewHeight, rootViewWidth);
+
+    rectArea = CGRectMake(
+                          (CGFloat) (0.5 * (rootViewWidth  - minAxis)),
+                          (CGFloat) (0.5 * (rootViewHeight - minAxis)),
+                          minAxis,
+                          minAxis
+                          );
+
+    [self.reticleView setFrame:rectArea];
+    self.reticleView.center = CGPointMake(self.view.center.x, self.view.center.y-self.toolbar.frame.size.height/2);
 }
 
 @end
